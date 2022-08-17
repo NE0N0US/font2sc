@@ -1,29 +1,26 @@
 const
-insetStroked = (strokeWidth, svgGraphicsElement) => {
-	const bBox = svgGraphicsElement.getBBox();
-	return {
-		left: Math.floor(bBox.x - strokeWidth),
-		top: Math.floor(bBox.y - strokeWidth),
-		right: Math.ceil(bBox.x + bBox.width + strokeWidth),
-		bottom: Math.ceil(bBox.y + bBox.height + strokeWidth)
-	};
-},
-insetsStroked = (element, strokeWidth, characters) => {
+insetsStroked = (element, strokeWidth, characters, padding, lefts, rights) => {
 	element.style.display = 'block';
-	const insets = characters.map(character => {
+	const insets = characters.map((character, characterIndex) => {
 		element.innerHTML = character;
-		return insetStroked(strokeWidth, element);
+		const bBox = element.getBBox();
+		return {
+			left: Math.floor(bBox.x + (padding ? 0 : bBox.width * lefts[characterIndex]) - strokeWidth),
+			top: Math.floor(bBox.y - strokeWidth),
+			right: Math.ceil(bBox.x + bBox.width - (padding ? 0 : bBox.width * rights[characterIndex] - 2) + strokeWidth) + 1,
+			bottom: Math.max(Math.ceil(bBox.y + bBox.height + strokeWidth), 1) + 1
+		};
 	});
 	element.style.display = 'none';
 	return insets;
 },
 sum = (array, start, end) => array.slice(start, end + 1).reduce((partialSum, value) => partialSum + value, 0),
-linesStroked = (element, strokeWidth, characters, width) => {
+linesStroked = (element, strokeWidth, characters, padding, lefts, rights, width) => {
 	const
-	insets = insetsStroked(element, strokeWidth, characters),
+	insets = insetsStroked(element, strokeWidth, characters, padding, lefts, rights),
 	widths = insets.map(inset => inset.right - inset.left),
 	ends = insets.reduce((lines, inset, index) => {
-		if(sum(widths, lines[lines.length - 2] + 1, lines[lines.length - 1] + 1) > width)
+		if(sum(widths, lines[lines.length - 2] + 1, lines[lines.length - 1] + 1) > width - 1)
 			lines.push(index);
 		else
 			lines[lines.length - 1] += 1;
@@ -45,12 +42,12 @@ linesStroked = (element, strokeWidth, characters, width) => {
 		};
 	});
 },
-layOutVerbose = (container, element, content, strokeWidth, characters, width) => {
+layOutVerbose = (container, element, content, strokeWidth, characters, padding, lefts, rights, width, fontCapsShift) => {
 	const
-	lines = linesStroked(element, strokeWidth, characters, width),
+	lines = linesStroked(element, strokeWidth, characters, padding, lefts, rights, width),
 	minLeft = Math.min(...lines.map(line => line.text[0].inset.left)),
 	heights = lines.map(line => line.bottom - line.top),
-	height = sum(heights, 0, lines.length - 1),
+	height = sum(heights, 0, lines.length - 1) + 1,
 	minTop = Math.min(...lines.map(line => line.top)),
 	maxBottom = Math.max(...lines.map(line => line.bottom)),
 	maxHeight = maxBottom - minTop,
@@ -62,7 +59,7 @@ layOutVerbose = (container, element, content, strokeWidth, characters, width) =>
 			y = sum(heights, 0, lineIndex - 1) - line.top,
 			lineDescription = line.text.map((symbol, symbolIndex) => {
 				const x = sum(widths, 0, symbolIndex - 1);
-				content.insertAdjacentHTML('beforeend', `<text x="${minLeft + x - symbol.inset.left}" y="${y}" class="font2sc">${symbol.character}</text>`);
+				content.insertAdjacentHTML('beforeend', `<text x="${minLeft + x - symbol.inset.left + (padding ? 0 : 1)}" y="${y}" class="font2sc">${symbol.character}</text>`);
 				return [
 					symbol.character,
 					...[
@@ -76,11 +73,11 @@ layOutVerbose = (container, element, content, strokeWidth, characters, width) =>
 					symbol.inset.right - symbol.inset.left
 				].join('\t');
 			}).join('\n');
-			content.insertAdjacentHTML('beforeend', `<rect x="${minLeft}" y="${y + 1}" width="${width}" height="1" class="font2sc"/>`);
+			content.insertAdjacentHTML('beforeend', `<rect x="${minLeft}" y="${y + 1.5}" width="${width}" height="1" class="font2sc"/>`);
 			return lineDescription;
 		}).join('\n'),
 		maxHeight,
-		'0\t0',
+		`0\t${Math.floor(fontCapsShift * maxHeight)}`,
 		'0.632',
 		'_'
 	].join('\n');
@@ -105,34 +102,83 @@ loadImg = src => new Promise((resolve, reject) => {
 	img.onerror = reject;
 	img.src = src;
 }),
-rasterizeAlpha = async(container, scale) => {
+rasterizeAlpha = async(container, scale, transform) => {
 	const
-	canvas = document.createElement('canvas'),
-	svgUrl = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(container)], {type: 'image/svg+xml'}));
-	canvas.width = scale * container.getAttribute('width');
-	canvas.height = scale * container.getAttribute('height');
-	const context = canvas.getContext("2d");
-	context.drawImage(await loadImg(svgUrl), 0, 0, canvas.width, canvas.height);
+	width = +container.getAttribute('width'),
+	height = +container.getAttribute('height'),
+	canvas = document.createElement('canvas');
+	canvas.width = width * scale;
+	canvas.height = scale;
+	const
+	context = canvas.getContext('2d'),
+	svgUrl = URL.createObjectURL(new Blob([new XMLSerializer().serializeToString(container)], {type: 'image/svg+xml'})),
+	image = await loadImg(svgUrl);
+	let data = new Uint8ClampedArray(width * height);
+	for(let y = 0; y < height; y++){
+		context.clearRect(0, 0, canvas.width, canvas.height);
+		context.drawImage(image, 0, y, width, 1, 0, 0, canvas.width, canvas.height);
+		for(let x = 0; x < width; x++)
+			data[y * width + x] = context.getImageData(x * scale, 0, scale, canvas.height).data.filter((pixelComponent, rgbaIndex) => rgbaIndex % 4 === 3).reduce((mean, value, index) => (mean * index + value) / (index + 1), 0);
+		await indicateProgress((y + 1) / height / 3, transform);
+	};
+	for(let y = 0; y < height; y++){
+		let previous = data[(y + 1) * width - 1];
+		for(let x = 0; x < width; x++){
+			const
+			index = y * width + x,
+			current = (previous + data[index]) / 2;
+			previous = data[index];
+			data[index] = current;
+		};
+		await indicateProgress((1 + (y + 1) / height) / 3, transform);
+	};
+	for(let x = 0; x < width; x++){
+		let previous = data[(height - 1) * width + x];
+		for(let y = 0; y < width; y++){
+			const
+			index = y * width + x,
+			current = (previous + data[index]) / 2;
+			previous = data[index];
+			data[index] = current;
+		};
+		await indicateProgress((2 + (x + 1) / width) / 3, transform);
+	};
 	URL.revokeObjectURL(svgUrl);
-	return context.getImageData(0, 0, canvas.width, canvas.height).data.filter((pixelComponent, rgbaIndex) => rgbaIndex % 4 === 3);
+	return data;
 },
-compose = (grayscale, alpha) => Uint8ClampedArray.from(Array(4 * alpha.length).fill().map((pixelComponent, rgbaIndex) => (rgbaIndex % 4 !== 3 ? grayscale : alpha)[(rgbaIndex - rgbaIndex % 4) / 4])),
+compose = (grayscale, alpha) => new Uint8ClampedArray(4 * alpha.length).map((pixelComponent, rgbaIndex) => (rgbaIndex % 4 === 3 ? alpha : grayscale)[(rgbaIndex - rgbaIndex % 4) / 4]),
 toBlob = canvas => new Promise(resolve => canvas.toBlob(blob => resolve(blob))),
-font2sc = async (fonts, width, scale, smallCaps) => {
-	const zip = new JSZip();
+font2sc = async (fonts, padding, width, scale, smallCaps) => {
+	const
+	waitFontFamily = document.getElementById('wait').style.fontFamily,
+	zip = new JSZip();
 	for(const font of fonts){
+		await indicateProgress(0, progress => progress);
 		try{
 			const
 			fontData = await font.arrayBuffer(),
 			fontBase64 = (await readAsDataUrl(font)).replace(/.+?base64,/, `data:${font.type};base64,`),
 			parsedFontData = opentype.parse(fontData),
-			fontCharacters = Object.values(parsedFontData.glyphs.glyphs).map(fontGlyph => fontGlyph.unicode).filter(unicode => (Number(unicode) === unicode) && (unicode >= 0x20)).map(unicode => String.fromCharCode(unicode)),
-			folder = zip.folder(parsedFontData.names.fontFamily.en),
-			fontFace = new FontFace(parsedFontData.names.fontFamily.en, fontData);
+			fontTop = parsedFontData.tables.head.yMax,
+			fontCap = parsedFontData.tables.os2.sCapHeight,
+			fontBottom = parsedFontData.tables.head.yMin,
+			fontCapsShift = fontCap === undefined ? 0 : (fontCap - fontTop + (fontTop - fontCap - fontBottom) / 2) / (fontTop - fontBottom),
+			fontGlyphs = Object.values(parsedFontData.glyphs.glyphs).map(fontGlyph => fontGlyph.unicodes.map(unicode => ({...fontGlyph, unicode: unicode}))).flat().filter(fontGlyph => (Number(fontGlyph.unicode) === fontGlyph.unicode) && (fontGlyph.unicode >= 0x20)).sort((a, b) => a.unicode - b.unicode),
+			fontCharacters = fontGlyphs.map(fontGlyph => String.fromCharCode(fontGlyph.unicode)),
+			fontLefts = fontGlyphs.map(fontGlyph => (fontGlyph.xMin === undefined || fontGlyph.advanceWidth === 0) ? 0 : (fontGlyph.xMin <= 0 ? 0 : fontGlyph.xMin) / (Math.max(fontGlyph.xMax, fontGlyph.advanceWidth) - Math.min(fontGlyph.xMin, 0))),
+			fontRights = fontGlyphs.map(fontGlyph => (fontGlyph.xMax === undefined || fontGlyph.advanceWidth === 0) ? 0 : (fontGlyph.xMax >= fontGlyph.advanceWidth ? 0 : fontGlyph.advanceWidth - fontGlyph.xMax) / (Math.max(fontGlyph.xMax, fontGlyph.advanceWidth) - Math.min(fontGlyph.xMin, 0))),
+			folder = zip.folder(parsedFontData.names.fullName.en),
+			fontFace = new FontFace(parsedFontData.names.fontFamily.en, fontData, {weight: 'normal', style: 'normal'}),
+			fontSizes = [12, '12u', 18, '18u', 24, 32],
+			loadEstimates = fontSizes.map(fontSize => Math.pow(parseInt(fontSize), 2)),
+			loadEstimatesSum = sum(loadEstimates, 0, loadEstimates.length - 1);
 			document.fonts.add(fontFace);
+			document.getElementById('wait').style.fontFamily = parsedFontData.names.fontFamily.en;
+			fit(document.querySelector('#wait>svg'), document.getElementById('wait'));
 			await document.fonts.ready;
-			for(const fontSize of [12, '12u', 18, '18u', 24, 32]){
+			for(let c = 0; c < fontSizes.length; c++){
 				const
+				fontSize = fontSizes[c],
 				fontSizeNum = parseInt(fontSize),
 				strokeWidth = fontSizeNum / 32,
 				container = new DOMParser().parseFromString(`
@@ -148,10 +194,10 @@ font2sc = async (fonts, width, scale, smallCaps) => {
 							stroke-width: ${strokeWidth * 2};
 							font-family: '${parsedFontData.names.fontFamily.en}';
 							font-variant-caps: ${smallCaps ? 'small-caps' : 'normal'};
-							font-size: ${fontSizeNum}pt;
+							font-size: ${fontSizeNum / 0.632 * parsedFontData.unitsPerEm / fontTop}px;
 						}
 						rect.font2sc{
-							fill: ${fontSizeNum !== fontSize ? 'white': 'transparent'};
+							fill: ${fontSizeNum === fontSize ? 'transparent' : 'white'};
 							stroke-width: 0;
 						}
 						@font-face{
@@ -169,16 +215,16 @@ font2sc = async (fonts, width, scale, smallCaps) => {
 				const
 				element = container.querySelector('text'),
 				content = container.querySelector('g');
-				addToArchive(folder, `Pericles${fontSize}.lst`, new Blob([layOutVerbose(container, element, content, strokeWidth, fontCharacters, width)], {type: 'text/plain'}));
-				const grayscale = await rasterizeAlpha(container, scale);
+				addToArchive(folder, `Pericles${fontSize}.lst`, new Blob([layOutVerbose(container, element, content, strokeWidth, fontCharacters, padding, fontLefts, fontRights, width, fontCapsShift)], {type: 'text/plain'}));
+				const grayscale = await rasterizeAlpha(container, scale, progress => ((sum(loadEstimates, 0, c - 1) + progress / 2 * loadEstimates[c]) / loadEstimatesSum));
 				for(const child of content.children)
 					child.style.stroke = 'white';
 				const
-				alpha = await rasterizeAlpha(container, scale),
+				alpha = await rasterizeAlpha(container, scale, progress => ((sum(loadEstimates, 0, c - 1) + (1 + progress) / 2 * loadEstimates[c]) / loadEstimatesSum)),
 				canvas = document.createElement('canvas');
-				canvas.width = scale * container.getAttribute('width');
-				canvas.height = scale * container.getAttribute('height');
-				canvas.getContext("2d").putImageData(new ImageData(compose(grayscale, alpha), canvas.width), 0, 0);
+				canvas.width = container.getAttribute('width');
+				canvas.height = container.getAttribute('height');
+				canvas.getContext('2d').putImageData(new ImageData(compose(grayscale, alpha), canvas.width), 0, 0);
 				addToArchive(folder, `Pericles${fontSize}.png`, await toBlob(canvas));
 				document.body.removeChild(container);
 			};
@@ -188,11 +234,12 @@ font2sc = async (fonts, width, scale, smallCaps) => {
 			alert(`${error.name}: ${error.message}. Skipping ${font.name}`);
 		};
 	};
+	document.getElementById('wait').style.fontFamily = waitFontFamily;
 	const
 	download = await zip.generateAsync({type: 'blob'}),
 	a = document.createElement('a');
 	a.href = URL.createObjectURL(download);
-	a.download = `font2sc-${new Date().toISOString().replaceAll(':', '-')}-${width}x${scale}.zip`;
+	a.download = `font2sc-${new Date().toISOString().replaceAll(':', '-')}-${padding ? 'sidebearings' : 'none'}-${width}x${scale}-${smallCaps ? 'smallcaps' : 'normal'}.zip`;
 	a.click();
 	URL.revokeObjectURL(a.href);
 },
@@ -216,13 +263,17 @@ upload = files => {
 	fonts = files;
 	document.getElementById('fonts').innerText = files.length === 0 ? 'Upload' : files.map(file => file.name).join(', ');
 },
-closeTab = () => {
-	if(history.length === 1)
-		close();
-	else
-		history.back();
+indicateProgress = async(value, transform) => {
+	document.getElementById('progress').style.width = `${transform(value) * 100}%`;
+	if(document.visibilityState === 'visible')
+		await new Promise(resolve => setTimeout(resolve));
 },
+closeTab = () => (history.length === 1 ? close : () => history.back())(),
 clickElement = id => document.getElementById(id).click(),
+changePadding = value => {
+	document.getElementById('smallCaps').classList.toggle('shown');
+	padding = value === 'true';
+},
 changeWidth = value => width = +value,
 changeScale = value => scale = +value,
 convert = async smallCaps => {
@@ -230,11 +281,12 @@ convert = async smallCaps => {
 		alert('No fonts selected');
 	else{
 		document.getElementById('wait').classList.add('shown');
-		await font2sc(fonts, width, scale, smallCaps);
+		await font2sc(fonts, padding, width, scale, smallCaps);
 		document.getElementById('wait').classList.remove('shown');
 	};
 };
 fonts = [];
+padding = true;
 width = 128;
 scale = 1;
 window.ondragenter = event => showDrop(event, document.getElementById('drop'));

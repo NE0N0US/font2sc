@@ -58,7 +58,7 @@ body{
 	align-items: center;
 	background-color: var(--background);
 }
-#drop:not(.shown), #wait:not(.shown){
+#drop:not(.shown), #wait:not(.shown), #smallCaps:not(.shown){
 	display: none;
 }
 #drop.shown~#modal, #wait.shown~#modal{
@@ -75,6 +75,13 @@ body{
 	position: absolute;
 	inset: 0;
 	opacity: 0;
+}
+#progress{
+	background-color: white;
+	mix-blend-mode: exclusion;
+	position: absolute;
+	inset: 0 auto 0 0;
+	width: 0;
 }
 #modal{
 	position: absolute;
@@ -98,10 +105,10 @@ body{
 #header, #content, #actions{
 	gap: var(--free);
 }
-#header, #content>div{
+#header, #content>div, #content>form{
 	overflow: hidden;
 }
-#header>*, #content>div>*{
+#header>*, #content>div>*, #content>form>*{
 	overflow: hidden;
 	white-space: nowrap;
 	text-overflow: ellipsis;
